@@ -1,4 +1,4 @@
-# wb_gel_streamlit_app.py
+
 import streamlit as st
 import math
 from itertools import product
