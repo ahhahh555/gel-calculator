@@ -1,0 +1,465 @@
+# wb_gel_streamlit_app.py
+import streamlit as st
+import math
+from itertools import product
+
+class WBGelCalculator:
+    def __init__(self):
+        # 市售胶浓度（显示值，实际浓度是2倍）
+        self.standard_concentrations = [4.5, 5.0, 6.0, 7.5, 8.0, 10.0, 12.5, 15.0]
+        
+    def setup_ui(self):
+        st.title("🧪 WB胶浓度稀释计算器")
+        
+        # 添加说明
+        with st.expander("📖 使用说明", expanded=True):
+            st.markdown("""
+            **使用方法：**
+            1. **选择胶浓度** - 勾选需要使用的胶浓度（可多选，所有选中的胶都必须使用）
+            2. **设置参数** - 输入目标总体积和目标胶浓度
+            3. **计算** - 点击计算按钮获取最优配比方案
+            
+            **注意事项：**
+            - 市售胶的**实际浓度为显示值的2倍**（如5%胶实际浓度为10%）
+            - 计算结果会显示前10组最优解，**整数解优先**
+            - 缓冲液比例适中的方案评分更高
+            """)
+        
+        st.divider()
+        
+        # 胶浓度选择
+        st.subheader("1️⃣ 选择胶浓度")
+        st.caption("所有选中的胶都必须使用，实际浓度为显示值的2倍")
+        
+        # 使用列布局显示复选框
+        cols = st.columns(4)
+        self.selected_gels = []
+        
+        for i, conc in enumerate(self.standard_concentrations):
+            col_idx = i % 4
+            with cols[col_idx]:
+                if st.checkbox(f"{conc}%", key=f"gel_{conc}", help=f"实际浓度: {conc*2}%"):
+                    self.selected_gels.append(conc)
+        
+        st.divider()
+        
+        # 目标参数
+        st.subheader("2️⃣ 设置目标参数")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            total_volume = st.number_input(
+                "**目标总体积 (ml)**",
+                min_value=0.1,
+                max_value=1000.0,
+                value=10.0,
+                step=0.1,
+                format="%.1f",
+                help="最终配制的胶溶液总体积"
+            )
+        
+        with col2:
+            target_concentration = st.number_input(
+                "**目标胶浓度 (%)**",
+                min_value=0.1,
+                max_value=30.0,
+                value=8.0,
+                step=0.1,
+                format="%.1f",
+                help="需要配制的胶浓度"
+            )
+        
+        st.divider()
+        
+        # 计算按钮
+        st.subheader("3️⃣ 计算结果")
+        
+        # 显示选中的胶和参数
+        if self.selected_gels:
+            selected_str = "、".join([f"{g}%" for g in self.selected_gels])
+            st.info(f"✅ 已选择: {selected_str} | 目标体积: {total_volume}ml | 目标浓度: {target_concentration}%")
+        
+        if st.button("🚀 开始计算", type="primary", use_container_width=True):
+            if not self.selected_gels:
+                st.error("❌ 请至少选择一种胶浓度！")
+            elif total_volume <= 0:
+                st.error("❌ 目标总体积必须大于0！")
+            elif target_concentration <= 0:
+                st.error("❌ 目标胶浓度必须大于0！")
+            else:
+                with st.spinner("正在计算最佳配比方案..."):
+                    solutions = self.calculate_solutions(
+                        self.selected_gels, 
+                        target_concentration, 
+                        total_volume
+                    )
+                    
+                    # 显示进度条
+                    progress_bar = st.progress(0)
+                    
+                    # 模拟计算过程（实际计算已在函数中完成）
+                    for i in range(100):
+                        # 这里只是模拟进度
+                        import time
+                        time.sleep(0.01)
+                        progress_bar.progress(i + 1)
+                    
+                    progress_bar.empty()
+                    
+                    # 显示结果
+                    self.display_results(solutions, self.selected_gels, total_volume, target_concentration)
+    
+    def calculate_solutions(self, selected_gels, target_conc, total_volume):
+        """计算所有可能的配比方案"""
+        solutions = []
+        n_gels = len(selected_gels)
+        
+        # 计算目标总胶质量（注意：胶浓度需要乘以2得到实际浓度）
+        target_gel_mass = target_conc * total_volume
+        
+        # 实际胶浓度（2倍显示值）
+        actual_gel_concentrations = [conc * 2 for conc in selected_gels]
+        
+        # 创建状态容器显示当前计算状态
+        status_text = st.empty()
+        
+        if n_gels == 1:
+            # 单一胶浓度 - 精确解
+            status_text.text("🔍 计算单一胶浓度方案...")
+            c_actual = actual_gel_concentrations[0]
+            v_gel = target_gel_mass / c_actual
+            buffer_vol = total_volume - v_gel
+            
+            if v_gel > 0 and buffer_vol >= 0:
+                solutions.append({
+                    'volumes': [v_gel],
+                    'buffer_volume': buffer_vol,
+                    'actual_conc': target_conc,
+                    'score': self.calculate_score([v_gel], buffer_vol, total_volume)
+                })
+            
+        elif n_gels == 2:
+            # 两个胶浓度 - 线性方程
+            status_text.text("🔍 计算两种胶混合方案...")
+            c1_actual, c2_actual = actual_gel_concentrations
+            
+            # 生成各种可能的v1值（步长0.1ml）
+            max_steps = int(total_volume * 10) + 1
+            
+            for i, v1 in enumerate(range(1, max_steps)):
+                v1_ml = v1 / 10.0
+                v2_ml = (target_gel_mass - c1_actual * v1_ml) / c2_actual
+                
+                if v2_ml > 0 and (v1_ml + v2_ml) <= total_volume:
+                    buffer_vol = total_volume - (v1_ml + v2_ml)
+                    actual_concentration = (c1_actual * v1_ml + c2_actual * v2_ml) / total_volume
+                    
+                    if abs(actual_concentration - target_conc) < 0.001:
+                        solutions.append({
+                            'volumes': [v1_ml, v2_ml],
+                            'buffer_volume': buffer_vol,
+                            'actual_conc': actual_concentration,
+                            'score': self.calculate_score([v1_ml, v2_ml], buffer_vol, total_volume)
+                        })
+        
+        else:
+            # 三个或更多胶浓度 - 使用优化方法
+            status_text.text("🔍 计算多种胶混合方案...")
+            solutions = self.solve_multiple_gels(selected_gels, actual_gel_concentrations, target_conc, total_volume)
+        
+        # 添加最大使用量解
+        status_text.text("🔍 生成最大使用量方案...")
+        max_usage_solutions = self.find_max_usage_solutions(selected_gels, actual_gel_concentrations, target_conc, total_volume)
+        solutions.extend(max_usage_solutions)
+        
+        # 去重并排序
+        status_text.text("🔍 排序和筛选最优解...")
+        unique_solutions = self.remove_duplicate_solutions(solutions)
+        unique_solutions.sort(key=lambda x: x['score'], reverse=True)
+        
+        status_text.empty()
+        
+        return unique_solutions[:10]
+    
+    def solve_multiple_gels(self, selected_gels, actual_concentrations, target_conc, total_volume):
+        """解决多个胶浓度的情况"""
+        solutions = []
+        n_gels = len(selected_gels)
+        target_gel_mass = target_conc * total_volume
+        
+        # 使用固定步长搜索
+        step = 0.5  # 0.5ml步长
+        max_steps = int(total_volume / step) + 1
+        
+        # 为前n-1个胶生成体积组合
+        for volumes in product([i * step for i in range(1, max_steps)], repeat=n_gels-1):
+            # 确保所有选中的胶都被使用（体积>0）
+            if any(v <= 0 for v in volumes):
+                continue
+            
+            total_used_volume = sum(volumes)
+            if total_used_volume >= total_volume:
+                continue
+            
+            # 计算最后一个胶的体积
+            remaining_mass = target_gel_mass - sum(c * v for c, v in zip(actual_concentrations[:-1], volumes))
+            last_volume = remaining_mass / actual_concentrations[-1]
+            
+            if last_volume > 0 and (total_used_volume + last_volume) <= total_volume:
+                all_volumes = list(volumes) + [last_volume]
+                buffer_vol = total_volume - sum(all_volumes)
+                
+                # 验证浓度
+                actual_concentration = sum(c * v for c, v in zip(actual_concentrations, all_volumes)) / total_volume
+                if abs(actual_concentration - target_conc) < 0.001:  # 允许微小误差
+                    solutions.append({
+                        'volumes': all_volumes,
+                        'buffer_volume': buffer_vol,
+                        'actual_conc': actual_concentration,
+                        'score': self.calculate_score(all_volumes, buffer_vol, total_volume)
+                    })
+        
+        return solutions
+    
+    def find_max_usage_solutions(self, selected_gels, actual_concentrations, target_conc, total_volume):
+        """找到各种最大使用量的解"""
+        solutions = []
+        n_gels = len(selected_gels)
+        target_gel_mass = target_conc * total_volume
+        
+        # 为每种胶生成一个最大使用量解
+        for i in range(n_gels):
+            # 让第i种胶使用最大可能量，其他胶按比例分配剩余质量
+            max_volumes = [0.1] * n_gels  # 所有胶至少用0.1ml
+            
+            # 第i种胶用较大体积
+            max_volumes[i] = total_volume * 0.6  # 用60%的总体积
+            
+            # 调整其他胶的体积以满足浓度要求
+            current_mass = sum(c * v for c, v in zip(actual_concentrations, max_volumes))
+            
+            if current_mass > 0:
+                scale_factor = target_gel_mass / current_mass
+                
+                # 按比例缩放所有体积
+                scaled_volumes = [v * scale_factor for v in max_volumes]
+                total_gel_vol = sum(scaled_volumes)
+                
+                if total_gel_vol <= total_volume:
+                    buffer_vol = total_volume - total_gel_vol
+                    actual_concentration = sum(c * v for c, v in zip(actual_concentrations, scaled_volumes)) / total_volume
+                    
+                    if abs(actual_concentration - target_conc) < 0.001:
+                        solutions.append({
+                            'volumes': scaled_volumes,
+                            'buffer_volume': buffer_vol,
+                            'actual_conc': actual_concentration,
+                            'score': self.calculate_score(scaled_volumes, buffer_vol, total_volume) - i
+                        })
+        
+        # 添加均衡使用解
+        if n_gels > 0:
+            balanced_volumes = [total_volume * 0.8 / n_gels] * n_gels  # 每种胶用相似体积
+            current_mass = sum(c * v for c, v in zip(actual_concentrations, balanced_volumes))
+            
+            if current_mass > 0:
+                scale_factor = target_gel_mass / current_mass
+                scaled_volumes = [v * scale_factor for v in balanced_volumes]
+                total_gel_vol = sum(scaled_volumes)
+                
+                if total_gel_vol <= total_volume:
+                    buffer_vol = total_volume - total_gel_vol
+                    actual_concentration = sum(c * v for c, v in zip(actual_concentrations, scaled_volumes)) / total_volume
+                    
+                    if abs(actual_concentration - target_conc) < 0.001:
+                        solutions.append({
+                            'volumes': scaled_volumes,
+                            'buffer_volume': buffer_vol,
+                            'actual_conc': actual_concentration,
+                            'score': self.calculate_score(scaled_volumes, buffer_vol, total_volume) + 10
+                        })
+        
+        return solutions
+    
+    def calculate_score(self, volumes, buffer_volume, total_volume):
+        """计算解的评分，整数解优先"""
+        score = 0
+        
+        # 整数解加分（主要评分标准）
+        if all(abs(v - round(v)) < 0.001 for v in volumes) and abs(buffer_volume - round(buffer_volume)) < 0.001:
+            score += 1000  # 整数解大幅加分
+        
+        # 体积数值简单加分（能被0.5, 1, 2, 5整除）
+        for v in volumes:
+            if v > 0:
+                if v == round(v):  # 整数
+                    score += 100
+                elif v * 2 == round(v * 2):  # 0.5的倍数
+                    score += 50
+                elif v * 10 == round(v * 10):  # 0.1的倍数
+                    score += 20
+        
+        if buffer_volume == round(buffer_volume):  # 整数缓冲液
+            score += 50
+        
+        # 使用多种胶加分（多样性）
+        used_gels = sum(1 for v in volumes if v > 0.1)  # 大于0.1ml算使用
+        score += used_gels * 10
+        
+        # 缓冲液比例适中加分（10%-90%）
+        buffer_ratio = buffer_volume / total_volume
+        if 0.1 <= buffer_ratio <= 0.9:
+            score += 30
+        
+        # 避免极端体积加分
+        if all(0.1 <= v <= total_volume * 0.8 for v in volumes):
+            score += 20
+        
+        return score
+    
+    def remove_duplicate_solutions(self, solutions):
+        """去除重复的解"""
+        unique_solutions = []
+        seen = set()
+        
+        for sol in solutions:
+            # 创建解的指纹（四舍五入到小数点后2位）
+            fingerprint = tuple(round(v, 2) for v in sol['volumes'])
+            
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                unique_solutions.append(sol)
+        
+        return unique_solutions
+    
+    def display_results(self, solutions, selected_gels, total_volume, target_conc):
+        if not solutions:
+            st.warning("⚠️ 无法找到满足条件的配比方案，请尝试调整参数或选择不同的胶浓度")
+            return
+        
+        # 显示统计信息
+        st.success(f"✅ 找到 {len(solutions)} 个有效方案")
+        
+        integer_solutions = sum(1 for sol in solutions if all(abs(v - round(v)) < 0.001 for v in sol['volumes']))
+        
+        cols = st.columns(3)
+        with cols[0]:
+            st.metric("总方案数", len(solutions))
+        with cols[1]:
+            st.metric("整数解", integer_solutions)
+        with cols[2]:
+            best_score = max(sol['score'] for sol in solutions) if solutions else 0
+            st.metric("最高评分", f"{best_score:.0f}")
+        
+        st.divider()
+        
+        # 显示前10个方案
+        st.subheader(f"📊 前{min(len(solutions), 10)}个最优方案")
+        
+        for i, sol in enumerate(solutions[:10], 1):
+            # 创建卡片式展示
+            with st.container():
+                # 标题行
+                is_integer = all(abs(v - round(v)) < 0.001 for v in sol['volumes'])
+                solution_type = "🔢 整数解" if is_integer else "📐 小数解"
+                
+                cols = st.columns([3, 1])
+                with cols[0]:
+                    st.markdown(f"### 方案 {i} • {solution_type} • 评分: {sol['score']:.0f}")
+                with cols[1]:
+                    buffer_ratio = sol['buffer_volume'] / total_volume * 100
+                    st.metric("缓冲液比例", f"{buffer_ratio:.1f}%")
+                
+                # 详细配比
+                st.markdown("**配比方案:**")
+                
+                # 使用列显示胶用量
+                gel_cols = st.columns(len(selected_gels) + 2)
+                
+                for j, (gel_conc, vol) in enumerate(zip(selected_gels, sol['volumes'])):
+                    with gel_cols[j]:
+                        st.metric(
+                            label=f"{gel_conc}%胶",
+                            value=f"{vol:.2f}ml",
+                            delta=f"{(vol/total_volume*100):.1f}%" if total_volume > 0 else "0%"
+                        )
+                
+                # 缓冲液用量
+                with gel_cols[-2]:
+                    st.metric(
+                        label="缓冲液",
+                        value=f"{sol['buffer_volume']:.2f}ml",
+                        delta=f"{(sol['buffer_volume']/total_volume*100):.1f}%"
+                    )
+                
+                # 实际浓度
+                with gel_cols[-1]:
+                    st.metric(
+                        label="实际浓度",
+                        value=f"{sol['actual_conc']:.3f}%",
+                        delta=f"偏差: {abs(sol['actual_conc']-target_conc):.3f}%"
+                    )
+                
+                # 操作建议
+                if i == 1 and is_integer:
+                    st.success("🎯 **推荐使用此方案** - 整数解，操作最方便")
+                elif i == 1:
+                    st.info("💡 **建议方案** - 评分最高，但包含小数")
+                
+                # 分隔线（最后一个方案不显示）
+                if i < min(len(solutions), 10):
+                    st.divider()
+
+def main():
+    # 设置页面配置
+    st.set_page_config(
+        page_title="WB胶浓度稀释计算器",
+        page_icon="🧪",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # 创建侧边栏
+    with st.sidebar:
+        st.image("https://img.icons8.com/color/96/000000/test-tube.png", width=80)
+        st.title("WB胶计算器")
+        
+        st.markdown("---")
+        
+        st.markdown("""
+        **功能特性：**
+        
+        🎯 多胶混合计算
+        📊 整数解优先
+        ⚡ 实时计算
+        📱 响应式设计
+        
+        **计算原理：**
+        
+        1. 市售胶实际浓度 = 标签浓度 × 2
+        2. 目标胶质量 = 目标浓度 × 总体积
+        3. 自动搜索最优体积配比
+        
+        **评分标准：**
+        
+        - 整数解: +1000分
+        - 简单数值: +50-100分
+        - 缓冲液比例适中: +30分
+        - 使用多种胶: +10分/种
+        """)
+        
+        st.markdown("---")
+        
+        st.caption("版本 2.0 | 基于Streamlit重构")
+        st.caption("© 2023 WB胶计算器 | 仅供科研使用")
+    
+    # 创建计算器实例并运行
+    try:
+        calculator = WBGelCalculator()
+        calculator.setup_ui()
+    except Exception as e:
+        st.error(f"应用程序错误: {str(e)}")
+        st.info("请刷新页面重试")
+
+if __name__ == "__main__":
+    main()
